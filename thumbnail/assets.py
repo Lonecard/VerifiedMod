@@ -147,3 +147,63 @@ def lava(seed=0):
     t[..., :3] = col
     t[..., 4] = 1.0
     return t
+
+
+# --------------------------------------------------------------------------- #
+# vanilla Minecraft textures (./mc_assets, fetched by fetch_assets.sh).
+# When present they replace the procedural stand-ins above.
+# --------------------------------------------------------------------------- #
+import os as _os
+from PIL import Image as _Image
+
+_MC = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "mc_assets")
+VANILLA = _os.path.isdir(_MC)
+
+
+def _load(kind, name, frame=0):
+    im = _Image.open(_os.path.join(_MC, kind, name + ".png")).convert("RGBA")
+    a = np.asarray(im, np.float32) / 255
+    if a.shape[0] > a.shape[1]:                          # animated strip -> one frame
+        s = a.shape[1]
+        a = a[frame * s:(frame + 1) * s]
+    return np.ascontiguousarray(a)
+
+
+def _with_mask(t, mask):
+    return np.dstack([t, mask.astype(np.float32)])
+
+
+if VANILLA:
+    _STONES = ["stone", "stone", "andesite", "tuff"]
+    _SLATES = ["deepslate", "deepslate", "cobbled_deepslate"]
+
+    def cave_stone(seed=0):
+        return _load("block", _STONES[seed % len(_STONES)])
+
+    def cave_deepslate(seed=0):
+        return _load("block", _SLATES[seed % len(_SLATES)])
+
+    def diamond_ore(seed=0, dark=False):
+        t = _load("block", "deepslate_diamond_ore" if dark else "diamond_ore")
+        r, g, b = t[..., 0], t[..., 1], t[..., 2]
+        gem = (g - r > 0.18) & (b - r > 0.12)                # the cyan diamond pixels
+        return _with_mask(t, gem)
+
+    def lava(seed=0):
+        t = _load("block", "lava_still", frame=seed * 5)
+        return _with_mask(t, np.ones(t.shape[:2]))
+
+    def pickaxe_sprite():
+        t = _load("item", "diamond_pickaxe")
+        r, g, b = t[..., 0], t[..., 1], t[..., 2]
+        head = (b - r > 0.06) & (t[..., 3] > 0)
+        return _with_mask(t, head * 0.75)
+
+    def torch_texture():
+        t = _load("block", "torch")
+        r, g, b = t[..., 0], t[..., 1], t[..., 2]
+        flame = (r > 0.75) & (g > 0.55) & (t[..., 3] > 0)
+        return _with_mask(t, np.where(flame, 1.0, 0.35 * (t[..., 3] > 0)))
+
+    def dripstone(part):
+        return _load("block", "pointed_dripstone_down_" + part)

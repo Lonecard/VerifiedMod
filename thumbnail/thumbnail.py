@@ -44,7 +44,8 @@ CONFIG = dict(
         cam_pos=(-2, 25, 54), cam_target=(30, 23, -80), fov=40,
         stack_pos=(36, -11, -26), stack_yaw=-20, ore_glow=0.95,
         root_yaw=24, pick_roll=90,
-        pose=dict(head=(-4, -4, 0), body=(0, 4, 0), arm_r=(-140, 0, -20),
+        torches=[(-27, 20, -47)],
+        pose=dict(head=(-4, -4, 0), body=(0, 4, 0), arm_r=(-128, 0, -20),
                   arm_l=(-24, 0, -10), leg_r=(14, 0, 0), leg_l=(-12, 0, 0)),
         rim_left="#c04dff", rim_right="#5ff4ff"),
     diamond_glow=dict(center=(870, 560), radius=320, color="#22e8ff"),
@@ -195,8 +196,8 @@ def build_cave(cfg, ss, W, H):
     tex = {f"s{n}": assets.cave_stone(n) for n in range(4)}
     tex.update({f"d{n}": assets.cave_deepslate(n) for n in range(3)})
     tex.update({"lava0": assets.lava(0), "lava1": assets.lava(1), "ore": assets.diamond_ore(9)})
-    stone = lambda: f"s{rng.integers(0, 4)}"
-    slate = lambda: f"d{rng.integers(0, 3)}"
+    stone = lambda: f"s{rng.choice(4, p=[0.38, 0.38, 0.12, 0.12])}"   # mostly stone, some andesite/tuff
+    slate = lambda: f"d{rng.choice(3, p=[0.4, 0.4, 0.2])}"
     cells = {}
     for i in range(-12, 24):
         for k in range(-18, 8):
@@ -235,6 +236,15 @@ def build_cave(cfg, ss, W, H):
             cells[(i, j, k)] = stone()
     for (i, k) in [(-4, 3), (-7, -1), (8, 2)]:                    # loose rocks on the floor
         cells[(i, 0, k)] = stone()
+    # wall torch on the left (vanilla torch model: 2x10x2 stick, tilted off the wall)
+    if hasattr(assets, "torch_texture"):
+        for (tx, ty, tz) in cfg.get("torches", []):
+            ttex = assets.torch_texture()
+            txf = mc.Xform(mc.rot(22.5, 0, 0), (tx, ty, tz))
+            for f in mc.box_faces(-1, 0, -1, 2, 10, 2, 0, 0, ttex, txf, "torch", emissive=1.4):
+                n = f.normal
+                f.rect = (7, 6, 2, 2) if n[1] > 0.7 else (7, 14, 2, 2) if n[1] < -0.7 else (7, 6, 2, 10)
+                faces.append(f)
     faces += mc.voxel_faces(cells, mc.Xform(), textures=tex,
                             tag_of=lambda t: "lava" if t.startswith("lava") else "world",
                             emissive_of=lambda t: 0.9 if t.startswith("lava") else (0.5 if t == "ore" else 0.0))
@@ -249,7 +259,8 @@ def build_cave(cfg, ss, W, H):
                 ((200, 10, -180), hexc("#ff6a1a") * 2.6, 95),
                 ((136, 90, -250), hexc("#ff7a22") * 2.4, 110),
                 ((264, 90, -250), hexc("#ff7a22") * 1.6, 100),
-                ((-120, 120, 40), hexc("#6a4cff") * 0.5, 160)],
+                ((-120, 120, 40), hexc("#6a4cff") * 0.5, 160)]
+               + [((tx, ty + 12, tz + 6), hexc("#ffa94a") * 1.4, 34) for (tx, ty, tz) in cfg.get("torches", [])],
         sheen=((-0.3, 0.4, 1.0), hexc("#7a5cff") * 0.13),
         fog=(hexc("#0b0614"), 1 / 700))
     cam = mc.Camera.look(cfg["cam_pos"], cfg["cam_target"], fov=cfg["fov"])
