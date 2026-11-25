@@ -169,7 +169,7 @@ def sprite_voxels(sprite, xf, tag, depth=1.0, emissive=0.0):
 def block_faces(tex16, x, y, z, xf, tag, size=16, emissive=0.0, skip=()):
     """A full cube using the same 16x16 texture on every side."""
     out = []
-    for f in box_faces(x, y, z, size, size, size, 0, 0, tex16, xf, tag, emissive=emissive, skip=skip):
+    for f in box_faces(x, y, z, size, size, size, 0, 0, tex16, xf, tag, emissive=emissive, skip=tuple(skip)):
         f.rect = (0, 0, tex16.shape[1], tex16.shape[0])
         out.append(f)
     return out
@@ -187,9 +187,21 @@ class Camera:
         self.R = R.T                          # world-to-camera
         self.fov = fov
 
+    @classmethod
+    def look(cls, pos, target, fov=50, up=(0, 1, 0)):
+        """Camera at `pos` looking at `target`."""
+        c = cls.__new__(cls)
+        c.pos, c.target, c.fov = np.asarray(pos, float), np.asarray(target, float), fov
+        fwd = normalize(c.target - c.pos)
+        right = normalize(np.cross(fwd, up))
+        upv = np.cross(right, fwd)
+        c.R = np.stack([right, upv, -fwd])
+        return c
+
 
 class Lights:
-    def __init__(self, ambient=(0.35, 0.35, 0.4), key=None, rims=(), points=(), sheen=None):
+    def __init__(self, ambient=(0.35, 0.35, 0.4), key=None, rims=(), points=(), sheen=None, fog=None):
+        self.fog = fog        # (rgb, density per unit of depth) or None
         self.ambient = np.asarray(ambient, float)
         self.key = key        # (dir towards light, rgb)
         self.rims = rims      # list of (dir towards light, rgb, power)
@@ -198,6 +210,7 @@ class Lights:
 
 
 def shade_face(f, lights, center):
+    """Per-face terms (ambient, key, sheen, rims). Point lights are per pixel."""
     if not f.shade:
         return np.ones(3), np.zeros(3)
     n = f.normal
@@ -212,18 +225,27 @@ def shade_face(f, lights, center):
     for d, c, pw in lights.rims:
         k = max(0.0, float(n @ normalize(d)))
         add += np.asarray(c) * (k ** pw)
+    return mult, add
+
+
+def point_terms(n, wp, lights):
+    """Per-pixel point lights for world positions wp (N,3) on a face with normal n."""
+    mult = np.zeros((len(wp), 3), np.float32)
+    add = np.zeros((len(wp), 3), np.float32)
     for pos, c, rad in lights.points:
-        L = np.asarray(pos) - center
-        dist = np.linalg.norm(L)
-        k = max(0.0, float(n @ (L / (dist + 1e-9)))) / (1 + (dist / rad) ** 2)
-        mult += np.asarray(c) * k
-        add += np.asarray(c) * k * 0.25
+        L = np.asarray(pos, np.float32) - wp
+        dist = np.sqrt((L * L).sum(1)) + 1e-6
+        k = np.maximum(0.0, (L @ n) / dist) / (1 + (dist / rad) ** 2)
+        c = np.asarray(c, np.float32)
+        mult += k[:, None] * c
+        add += k[:, None] * c * 0.2
     return mult, add
 
 
 def render(faces, cam, W, H, lights, ss=1):
     """Rasterise faces. Returns dict(rgba float HxWx4, tag int HxW, emis HxWx3,
-    tags list). Pixel-centre sampling; nearest-neighbour texels."""
+    depth HxW, tags list). Pixel-centre sampling; nearest-neighbour texels.
+    Textures may carry a 5th channel = emission mask (per-texel glow)."""
     W, H = W * ss, H * ss
     rgb = np.zeros((H, W, 3), np.float32)
     emis = np.zeros((H, W, 3), np.float32)
@@ -232,6 +254,7 @@ def render(faces, cam, W, H, lights, ss=1):
     tags = []
     f_px = 0.5 * H / math.tan(math.radians(cam.fov) / 2)
     cx, cy = W / 2, H / 2
+    fog = getattr(lights, "fog", None)
 
     for face in faces:
         center = face.pts.mean(0)
@@ -278,19 +301,55 @@ def render(faces, cam, W, H, lights, ss=1):
             m = inside & (texel[..., 3] > 0.5) & (iz > sub_z)
             if not m.any():
                 continue
-            col = texel[..., :3] * mult + add
+            tc = texel[m]                                   # (N, C)
+            col = tc[:, :3] * mult + add
+            if face.tag in AO_TAGS:                         # soft darkening toward block edges
+                e = np.minimum(np.minimum(s[m], 1 - s[m]), np.minimum(t[m], 1 - t[m]))
+                col = col * (1 - 0.32 * np.clip(1 - e / 0.18, 0, 1) ** 2)[:, None]
+            if lights.points and face.shade:
+                P = face.pts[list(tri)]
+                bb = np.stack([b0[m] / Z[0], b1[m] / Z[1], b2[m] / Z[2]], 1) / iz[m][:, None]
+                wp = (bb @ P).astype(np.float32)
+                pm, pa = point_terms(face.normal.astype(np.float32), wp, lights)
+                col = col + tc[:, :3] * pm + pa
+            em = np.zeros(len(tc), np.float32)
             if face.emissive:
-                col = texel[..., :3] * (0.55 + 0.6 * mult.mean() + face.emissive) + add
-                emis[ymin:ymax + 1, xmin:xmax + 1][m] = texel[..., :3][m] * face.emissive
-            elif face.tag != "_":
-                emis[ymin:ymax + 1, xmin:xmax + 1][m] = 0
-            rgb[ymin:ymax + 1, xmin:xmax + 1][m] = col[m]
+                em = tc[:, 4] if tc.shape[1] > 4 else np.ones(len(tc), np.float32)
+                glow = tc[:, :3] * (0.6 + 0.5 * mult.mean() + face.emissive)
+                col = col * (1 - em[:, None]) + glow * em[:, None]
+            if fog is not None:
+                fcol, dens = fog
+                fz = 1 - np.exp(-(1 / iz[m]) * dens)
+                fz = fz * (1 - em)                          # glowing texels cut through fog
+                col = col * (1 - fz[:, None]) + np.asarray(fcol, np.float32) * fz[:, None]
+            rgb[ymin:ymax + 1, xmin:xmax + 1][m] = col
+            emis[ymin:ymax + 1, xmin:xmax + 1][m] = tc[:, :3] * (em * face.emissive)[:, None]
             sub_z[m] = iz[m]
             tagbuf[ymin:ymax + 1, xmin:xmax + 1][m] = tid
 
     alpha = (zbuf > 0).astype(np.float32)
     rgba = np.dstack([np.clip(rgb, 0, 1), alpha])
-    return dict(rgba=rgba, tag=tagbuf, tags=tags, emis=emis)
+    depth = np.where(zbuf > 0, 1 / np.maximum(zbuf, 1e-9), np.inf).astype(np.float32)
+    return dict(rgba=rgba, tag=tagbuf, tags=tags, emis=emis, depth=depth)
+
+
+def voxel_faces(cells, xf, tag_of=lambda t: "world", emissive_of=lambda t: 0.0, textures=None):
+    """cells: {(i,j,k): texture-key}. Builds 16-unit blocks, emitting only the
+    faces that touch an empty cell (no hidden interior faces)."""
+    out = []
+    nb = {"right": (-1, 0, 0), "left": (1, 0, 0), "bottom": (0, -1, 0), "top": (0, 1, 0),
+          "back": (0, 0, -1), "front": (0, 0, 1)}
+    for (i, j, k), key in cells.items():
+        skip = [n for n, (a, b, c) in nb.items() if (i + a, j + b, k + c) in cells]
+        if len(skip) == 6:
+            continue
+        tex = textures[key] if textures else key
+        out += block_faces(tex, i * 16, j * 16, k * 16, xf, tag_of(key),
+                           emissive=emissive_of(key), skip=skip)
+    return out
+
+
+AO_TAGS = {"world", "ore"}
 
 
 def to_image(arr):

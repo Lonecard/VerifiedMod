@@ -27,24 +27,25 @@ OUT = os.path.join(HERE, "out")
 
 CONFIG = dict(
     size=(1280, 720),
-    ss=2,                                   # composite at 2x, downsample at the end
+    ss=int(os.environ.get("SS", 2)),                                   # composite at 2x, downsample at the end
     text=dict(string="EVERYTHING?", xy=(46, 26), width=640, rotate=-4,
               fill_top="#fff9d6", fill_mid="#ffd84a", fill_bot="#ff8a1a",
               outline="#12021c", outline_px=11, extrude=16),
     raven=dict(                              # top right, the one making the request
-        anchor=(1000, 600), height=860,      # centre of the rendered figure, its pixel height
+        anchor=(1045, 600), height=860,      # centre of the rendered figure, its pixel height
         yaw=0, pitch=-6, fov=32, dist=125, root_yaw=-22,
-        pose=dict(head=(12, 4, 4), body=(0, 0, 0), arm_r=(-62, -36, 0),
+        pose=dict(head=(12, 4, 4), body=(0, 0, 0), arm_r=(-60, -30, 0),
                   arm_l=(-6, 0, 16), leg_r=(0, 0, 2), leg_l=(0, 0, -2)),
-        rim_left="#ff3fb4", rim_right="#ffb23f", aura="#ff4f9a"),
-    miner=dict(                              # bottom left, Lonecard + diamonds
-        anchor=(330, 540), height=380, stack_yaw=-25,
-        yaw=10, pitch=12, fov=30, dist=170, root_yaw=50,
+        rim_left="#5ff4ff", rim_right="#ffb23f", aura="#ff6a1a"),
+    cave=dict(                               # 3-D cave + Lonecard + diamond ore stack
+        cam_pos=(20, 26, 80), cam_target=(40, 34, -40), fov=50,
+        stack_pos=(27, 0, 0), stack_yaw=-8, ore_glow=0.95,
+        root_yaw=50,
         pose=dict(head=(6, -4, 0), body=(0, 6, 0), arm_r=(-72, 10, 0),
                   arm_l=(-35, 0, -8), leg_r=(18, 0, 0), leg_l=(-18, 0, 0)),
         rim_left="#c04dff", rim_right="#5ff4ff"),
-    diamond_glow=dict(center=(470, 560), radius=330, color="#22e8ff"),
-    burst=dict(center=(1010, 330)),
+    diamond_glow=dict(center=(585, 500), radius=300, color="#22e8ff"),
+    lava_glow=dict(center=(1050, 520), radius=420),
 )
 
 
@@ -159,15 +160,17 @@ def build_raven(cfg, ss):
     return render_layer(faces, cam, lights, cfg["height"] * ss, render_px=1900)
 
 
-def build_miner(cfg, ss):
+def build_cave(cfg, ss, W, H):
+    """One 3-D scene: cave + Lonecard + pickaxe + diamond-ore stack, full frame."""
+    rng = np.random.default_rng(cfg.get("seed", 4))
     skin = mc.load_tex(os.path.join(HERE, "skins", "lonecard.png"))
-    dia, pick, stone = assets.diamond_block(), assets.pickaxe_sprite(), assets.stone_block()
+    pick = assets.pickaxe_sprite()
     root = mc.Xform(mc.rot(0, cfg["root_yaw"], 0))
     faces, joints = mc.player_faces(skin, root, cfg["pose"], tag="lonecard")
 
-    # pickaxe in the right hand (sprite handle diagonal -> arm forward axis)
+    # pickaxe in the right hand: sprite handle axis (1,1) -> along the arm (-y),
+    # head arc (-1,1) -> arm forward (+z)
     s = 1.05
-    # sprite handle axis (1,1) -> along the arm (-y), head arc (-1,1) -> arm forward (+z)
     R = np.column_stack([np.array([0, -1, -1]) / math.sqrt(2),
                          np.array([0, -1, 1]) / math.sqrt(2),
                          np.array([-1, 0, 0])])
@@ -176,27 +179,80 @@ def build_miner(cfg, ss):
     item = joints["arm_r"] @ mc.Xform(R, hand - R @ (s * grip), s)
     faces += mc.sprite_voxels(pick, item, "pickaxe", depth=1.0)
 
-    # three diamond blocks (2 + 1 stack) in front of Lonecard
-    w = mc.Xform(mc.rot(0, cfg["stack_yaw"], 0), (30, 0, 0))
-    stack = [(-16, 0, -8), (0, 0, -8), (-8, 16, -8)]
-    for (x, y, z) in stack:
-        faces += mc.block_faces(dia, x, y, z, w, "diamond", emissive=0.55)
+    # diamond ore stack (2 + 1) set into a small stone outcrop
+    w = mc.Xform(mc.rot(0, cfg["stack_yaw"], 0), cfg["stack_pos"])
+    for n, (x, y, z) in enumerate([(-16, 0, -8), (0, 0, -8), (-8, 16, -8)]):
+        faces += mc.block_faces(assets.diamond_ore(n), x, y, z, w, "ore", emissive=cfg["ore_glow"])
+    for n, (x, y, z) in enumerate([(16, 0, -24), (-16, 0, -24), (0, 0, -24),
+                                   (-8, 16, -24), (8, 16, -24)]):
+        faces += mc.block_faces(assets.cave_stone(n % 3), x, y, z, w, "world")
 
-    # stone floor
-    for bx in range(-3, 4) if cfg.get("floor") else []:
-        for bz in range(-2, 3):
-            faces += mc.block_faces(stone, bx * 16 - 8 + 12, -16, bz * 16 - 10, w, "floor")
+    # --- cave volume on a 16-unit grid
+    tex = {f"s{n}": assets.cave_stone(n) for n in range(4)}
+    tex.update({f"d{n}": assets.cave_deepslate(n) for n in range(3)})
+    tex.update({"lava0": assets.lava(0), "lava1": assets.lava(1), "ore": assets.diamond_ore(9)})
+    stone = lambda: f"s{rng.integers(0, 4)}"
+    slate = lambda: f"d{rng.integers(0, 3)}"
+    cells = {}
+    for i in range(-12, 24):
+        for k in range(-18, 8):
+            cells[(i, -1, k)] = slate() if rng.random() < 0.6 else stone()
+            cells[(i, 11, k)] = stone()                         # ceiling
+            if rng.random() < 0.18 and k < 2:                   # stalactites
+                for jj in range(10, 10 - rng.integers(1, 4), -1):
+                    cells[(i, jj, k)] = stone()
+    # near back wall (behind Lonecard) with uneven face
+    for i in range(-12, 6):
+        for j in range(0, 11):
+            if i >= 3 and j < 6 + (i - 3) * 2:                  # opening into the lava chamber
+                continue
+            cells[(i, j, -4)] = stone() if rng.random() < 0.7 else slate()
+            if j >= 3 and rng.random() < 0.35:
+                cells[(i, j, -3)] = stone()
+    for j in range(0, 11):                                      # left wall
+        for k in range(-4, 8):
+            cells[(-12, j, k)] = stone()
+    # deep chamber to the right: far wall, lava pool, lava fall, rock columns
+    for i in range(6, 24):
+        for j in range(0, 11):
+            cells[(i, j, -18)] = slate() if rng.random() < 0.5 else stone()
+    for j in range(0, 11):
+        for k in range(-18, 8):
+            cells[(23, j, k)] = stone()
+    for i in range(9, 16):
+        for k in range(-14, -8):
+            if not ((i in (9, 15)) and (k in (-14, -9))):
+                cells[(i, -1, k)] = "lava0" if (i + k) % 2 else "lava1"
+    for j in range(-1, 11):
+        cells[(8, j, -17)] = "lava0" if j % 2 else "lava1"
+        cells[(16, j, -17)] = "lava1" if j % 2 else "lava0"
+    cells[(18, 6, -17)] = "ore"
+    for (i, k, h) in [(19, -10, 4), (13, -4, 1), (21, -3, 3), (11, -15, 2)]:
+        for j in range(h):
+            cells[(i, j, k)] = stone()
+    for (i, k) in [(-4, 3), (-7, -1), (8, 2)]:                    # loose rocks on the floor
+        cells[(i, 0, k)] = stone()
+    faces += mc.voxel_faces(cells, mc.Xform(), textures=tex,
+                            tag_of=lambda t: "lava" if t.startswith("lava") else "world",
+                            emissive_of=lambda t: 0.9 if t.startswith("lava") else (0.5 if t == "ore" else 0.0))
 
-    glow_pos = (22, 14, 10)
+    ore_c = np.asarray(cfg["stack_pos"], float) + np.array([-2, 16, 6])
     lights = mc.Lights(
-        ambient=(0.35, 0.3, 0.45),
-        key=((-0.5, 0.8, 0.8), (0.65, 0.6, 0.75)),
-        rims=[((1.0, 0.2, -0.8), hexc(cfg["rim_right"]) * 0.35, 2.0),
-              ((-1.0, 0.4, -0.8), hexc(cfg["rim_left"]) * 0.3, 2.0)],
-        points=[(glow_pos, hexc("#46f0ff") * 0.9, 24)],
-        sheen=((-0.3, 0.4, 1.0), hexc("#7a5cff") * 0.10))
-    cam = mc.Camera((18, 12, 0), yaw=cfg["yaw"], pitch=cfg["pitch"], dist=cfg["dist"], fov=cfg["fov"])
-    return render_layer(faces, cam, lights, cfg["height"] * ss, render_px=1700)
+        ambient=(0.11, 0.09, 0.17),
+        key=((-0.4, 0.8, 0.6), (0.22, 0.22, 0.36)),
+        rims=[((1.0, 0.2, -0.8), hexc(cfg["rim_right"]) * 0.3, 2.0),
+              ((-1.0, 0.4, -0.8), hexc(cfg["rim_left"]) * 0.25, 2.0)],
+        points=[(ore_c + np.array([-10, 4, 26]), hexc("#3feaff") * 1.3, 24),
+                ((200, 10, -180), hexc("#ff6a1a") * 2.6, 95),
+                ((136, 90, -250), hexc("#ff7a22") * 2.4, 110),
+                ((264, 90, -250), hexc("#ff7a22") * 1.6, 100),
+                ((-120, 120, 40), hexc("#6a4cff") * 0.5, 160)],
+        sheen=((-0.3, 0.4, 1.0), hexc("#7a5cff") * 0.13),
+        fog=(hexc("#0b0614"), 1 / 700))
+    cam = mc.Camera.look(cfg["cam_pos"], cfg["cam_target"], fov=cfg["fov"])
+    r = mc.render(faces, cam, W, H, lights)
+    tags = {t: (r["tag"] == i).astype(np.float32) for i, t in enumerate(r["tags"])}
+    return dict(rgba=r["rgba"], emis=r["emis"], tags=tags, depth=r["depth"])
 
 
 # --------------------------------------------------------------------------- #
@@ -381,53 +437,45 @@ def main():
 
     print("rendering 3-D models...")
     raven = place((H, W), build_raven(CONFIG["raven"], ss), CONFIG["raven"]["anchor"], ss)
-    miner = place((H, W), build_miner(CONFIG["miner"], ss), CONFIG["miner"]["anchor"], ss)
+    cave = build_cave(CONFIG["cave"], ss, W, H)
 
     print("compositing...")
-    img = background(W, H, ss)
-    save("01_background", img)
+    cc = CONFIG["cave"]
+    img = cave["rgba"][..., :3].copy()
+    lmask = cave["tags"].get("lonecard", 0) + cave["tags"].get("pickaxe", 0)
+    omask = cave["tags"].get("ore", np.zeros((H, W), np.float32))
+    # Lonecard: coloured rim light (cyan from the ore side, violet on the back)
+    img = img + rim(lmask, 1, -0.4, 3 * ss, hexc(cc["rim_right"]), 1.0) \
+              + rim(lmask, -1, -0.5, 3 * ss, hexc(cc["rim_left"]), 0.8)
+    # bloom: ore gems + lava, plus a soft halo behind the ore stack (focal point)
+    img = screen(img, hexc("#2ff0ff")[None, None] * (blur(omask, 46 * ss) * 0.85 * (1 - 0.8 * omask))[..., None])
+    bloom = blur(cave["emis"], 4 * ss) * 0.8 + blur(cave["emis"], 30 * ss) * 0.8
+    img = screen(np.clip(img, 0, 1), np.clip(bloom, 0, 1))
+    # light haze in the air: cyan around the ore, orange over the lava chamber
+    dg = CONFIG["diamond_glow"]
+    gx, gy = (c * ss for c in dg["center"])
+    img = screen(img, hexc(dg["color"])[None, None] * (radial(W, H, gx, gy, dg["radius"] * ss, 1.6) * 0.3 * (1 - 0.75 * omask))[..., None])
+    lx, ly = (c * ss for c in CONFIG["lava_glow"]["center"])
+    img = screen(img, hexc("#ff6a1a")[None, None] * (radial(W, H, lx, ly, CONFIG["lava_glow"]["radius"] * ss, 1.5) * 0.38)[..., None])
+    save("01_cave_lonecard_ore", np.clip(img, 0, 1))
 
-    # --- Raven: aura behind, figure, coloured rim lights
+    # --- Raven: warm aura from the lava behind, figure, coloured rim lights
     rc = CONFIG["raven"]
     ra = raven["rgba"][..., 3]
     aura = blur(ra, 26 * ss)
-    img = screen(img, hexc(rc["aura"])[None, None] * (aura * 0.55)[..., None])
+    img = screen(img, hexc(rc["aura"])[None, None] * (aura * 0.5)[..., None])
     rrgb = raven["rgba"][..., :3]
     rrgb = rrgb + rim(ra, 1, -0.6, 5 * ss, hexc(rc["rim_right"]), 1.25) \
-                + rim(ra, -0.8, -0.6, 4 * ss, hexc(rc["rim_left"]), 1.1)
+                + rim(ra, -0.8, -0.6, 4 * ss, hexc(rc["rim_left"]), 1.0)
     raven_rgba = np.dstack([np.clip(rrgb, 0, 1), ra])
     save("03_raven", raven_rgba)
     img = over(img, raven_rgba[..., :3], ra)
 
-    # --- Miner group: diamond glow, Lonecard rims
-    mcfg = CONFIG["miner"]
-    ma = miner["rgba"][..., 3]
-    dmask = miner["tags"].get("diamond", np.zeros_like(ma))
-    lmask = miner["tags"].get("lonecard", np.zeros_like(ma)) + miner["tags"].get("pickaxe", np.zeros_like(ma))
-    fmask = miner["tags"].get("floor", np.zeros_like(ma))
-    # floor fades into the dark at its edges
-    fade = blur(fmask, 30 * ss)
-    marr = miner["rgba"].copy()
-    marr[..., 3] = np.clip(ma - fmask * (1 - np.clip((fade - 0.35) / 0.4, 0, 1)), 0, 1)
-    # soft glow behind the diamonds (focal point)
-    halo = blur(dmask, 40 * ss)
-    img = screen(img, hexc("#2ff0ff")[None, None] * (halo * 0.9)[..., None])
-    img = screen(img, hexc("#5a3cff")[None, None] * (blur(lmask, 24 * ss) * 0.35)[..., None])
-    mrgb = marr[..., :3]
-    mrgb = mrgb + rim(lmask, 1, -0.4, 3 * ss, hexc(mcfg["rim_right"]), 1.0) \
-                + rim(lmask, -1, -0.5, 3 * ss, hexc(mcfg["rim_left"]), 0.9)
-    marr[..., :3] = np.clip(mrgb, 0, 1)
-    save("02_lonecard_diamonds", marr)
-    img = over(img, marr[..., :3], marr[..., 3])
-    # bloom from emissive diamond pixels (on top, so the blocks glow)
-    bloom = blur(miner["emis"], 10 * ss) * 0.9 + blur(miner["emis"], 34 * ss) * 0.8
-    img = screen(img, bloom * hexc("#8ffbff")[None, None])
-
     # --- particles
     sp = sparkles(W, H, ss, [
-        (268, 520, 38, 26, "#bffcff", 2.5, 6),       # mining sparks where the pick hits
-        (520, 560, 120, 18, "#5ff4ff", 1.5, 4),
-        (1010, 330, 260, 22, "#ffc36a", 1.5, 4),     # embers around the burst
+        (452, 470, 34, 26, "#bffcff", 2.5, 6),       # mining sparks where the pick hits
+        (470, 560, 120, 14, "#5ff4ff", 1.5, 4),
+        (930, 420, 240, 26, "#ffb35a", 1.2, 3.5),    # embers rising off the lava
     ], rng)
     save("04_particles", np.dstack([sp, sp.max(-1)]))
     img = screen(img, sp)

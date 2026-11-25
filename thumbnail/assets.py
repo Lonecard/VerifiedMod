@@ -84,3 +84,64 @@ def stone_block(seed=3):
     t[..., 1] = g * 0.9
     t[..., 2] = g * 1.08
     return t
+
+
+# --------------------------------------------------------------------------- #
+# cave set (all original, generated in code)
+# --------------------------------------------------------------------------- #
+def _noise_stone(seed, base, var, tint):
+    rng = np.random.default_rng(seed)
+    g = base + var * rng.random((16, 16))
+    # a few darker clumps / cracks so tiles don't look like flat noise
+    for _ in range(5):
+        x, y = rng.integers(0, 15, 2)
+        g[y:y + rng.integers(1, 3), x:x + rng.integers(2, 4)] *= 0.72
+    for _ in range(4):
+        x, y = rng.integers(0, 16, 2)
+        g[y, x] *= 1.25
+    t = np.ones((16, 16, 4), np.float32)
+    t[..., :3] = np.clip(g[..., None] * np.asarray(tint, np.float32), 0, 1)
+    return t
+
+
+def cave_stone(seed=0):
+    return _noise_stone(100 + seed, 0.36, 0.14, (0.97, 0.97, 1.03))
+
+
+def cave_deepslate(seed=0):
+    t = _noise_stone(200 + seed, 0.20, 0.08, (0.95, 0.95, 1.08))
+    for y in (5, 11):                                   # layered look
+        t[y, :, :3] *= 0.7
+    return t
+
+
+def diamond_ore(seed=0, dark=True):
+    """Stone (or deepslate) with cyan gem clusters. 5th channel = glow mask."""
+    base = cave_deepslate(seed) if dark else cave_stone(seed)
+    t = np.zeros((16, 16, 5), np.float32)
+    t[..., :4] = base
+    hi, mid, lo, white = (_hex(c) for c in ("#8ff7ff", "#2fd6ea", "#13819e", "#ffffff"))
+    # each gem: little 3x3-ish shard, light top-left, dark bottom-right
+    gems = [(3, 2), (11, 3), (6, 8), (12, 10), (2, 12)]
+    for (gx, gy) in gems:
+        pts = {(0, 0): hi, (1, 0): hi, (0, 1): mid, (1, 1): mid, (2, 1): lo, (1, 2): lo,
+               (-1, 1): hi, (0, 2): lo, (1, -1): white}
+        for (dx, dy), c in pts.items():
+            x, y = gx + dx, gy + dy
+            if 0 <= x < 16 and 0 <= y < 16:
+                t[y, x, :3] = c
+                t[y, x, 4] = 1.0
+    return t
+
+
+def lava(seed=0):
+    rng = np.random.default_rng(300 + seed)
+    t = np.ones((16, 16, 5), np.float32)
+    n = rng.random((16, 16))
+    yy, xx = np.mgrid[0:16, 0:16]
+    flow = 0.5 + 0.5 * np.sin((xx * 0.7 + yy * 0.35) + n * 2.2)
+    a, b, c = _hex("#c2300a"), _hex("#ff7a12"), _hex("#ffd34d")
+    col = np.where(flow[..., None] < 0.5, a + (b - a) * (flow[..., None] * 2), b + (c - b) * ((flow[..., None] - 0.5) * 2))
+    t[..., :3] = col
+    t[..., 4] = 1.0
+    return t
