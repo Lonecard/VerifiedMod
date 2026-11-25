@@ -32,20 +32,23 @@ CONFIG = dict(
               string="EVERYTHING?", xy=(46, 26), width=640, rotate=-4,
               fill_top="#fff9d6", fill_mid="#ffd84a", fill_bot="#ff8a1a",
               outline="#12021c", outline_px=11, extrude=16),
-    raven=dict(                              # background: on a ledge in the lava chamber
-        pos=(120, 48, -152), yaw=-36, ledge=3,
-        pose=dict(head=(6, 0, 0), body=(0, 0, 0), arm_r=(-84, 18, 0),
-                  arm_l=(-4, 0, 10), leg_r=(0, 0, 2), leg_l=(0, 0, -2)),
-        rim_left="#ff4fa0", rim_right="#ffb23f"),
+    raven=dict(                              # big, looming BEHIND the hero and the ore
+        anchor=(1080, 515), height=1000,      # centre / pixel height of the rendered figure
+        yaw=0, pitch=-6, fov=32, dist=125, root_yaw=-12,
+        pose=dict(head=(16, -10, 3), body=(4, 0, 0), arm_r=(-8, 0, -8),
+                  arm_l=(-6, 0, 8), leg_r=(0, 0, 2), leg_l=(0, 0, -2)),
+        depth_cut=(84, 92),                 # scene depth where Raven passes behind things
+        haze=0.14, haze_color="#4a1a20", soften=0.0,
+        rim_left="#ff4fa0", rim_right="#ffb23f", aura="#ff5a1a"),
     cave=dict(                               # hero shot: Lonecard + diamond ore stack in a cave
         cam_pos=(-2, 25, 54), cam_target=(30, 23, -80), fov=40,
-        stack_pos=(36, 0, -26), stack_yaw=-20, ore_glow=0.95,
+        stack_pos=(36, -11, -26), stack_yaw=-20, ore_glow=0.95,
         root_yaw=24, pick_roll=90,
         pose=dict(head=(-4, -4, 0), body=(0, 4, 0), arm_r=(-140, 0, -20),
                   arm_l=(-24, 0, -10), leg_r=(14, 0, 0), leg_l=(-12, 0, 0)),
         rim_left="#c04dff", rim_right="#5ff4ff"),
-    diamond_glow=dict(center=(880, 470), radius=320, color="#22e8ff"),
-    lava_glow=dict(center=(1080, 200), radius=380),
+    diamond_glow=dict(center=(870, 560), radius=320, color="#22e8ff"),
+    lava_glow=dict(center=(1060, 170), radius=480),
 )
 
 
@@ -150,12 +153,12 @@ def build_raven(cfg, ss):
     root = mc.Xform(mc.rot(0, cfg["root_yaw"], 0))
     faces, _ = mc.player_faces(skin, root, cfg["pose"], tag="raven")
     lights = mc.Lights(
-        ambient=(0.55, 0.45, 0.6),
-        key=((-0.4, 0.6, 1.0), (0.9, 0.85, 0.95)),
-        rims=[((1.0, 0.25, -1.0), hexc("#ff4f9a") * 0.4, 2.0),
-              ((-1.0, 0.3, -1.0), hexc(cfg["rim_left"]) * 0.3, 2.0),
-              ((0, 1, 0), hexc("#ff9a5a") * 0.10, 1.0)],
-        sheen=((-0.5, 0.35, 1.0), hexc("#7a5cff") * 0.16))
+        ambient=(0.35, 0.28, 0.4),
+        key=((-0.4, 0.6, 1.0), (0.55, 0.5, 0.65)),
+        rims=[((1.0, 0.25, -1.0), hexc("#ff7a2a") * 0.45, 2.0),
+              ((-1.0, 0.3, -1.0), hexc(cfg["rim_left"]) * 0.25, 2.0),
+              ((0, 1, 0), hexc("#ff9a5a") * 0.12, 1.0)],
+        sheen=((-0.5, 0.35, 1.0), hexc("#7a5cff") * 0.12))
     cam = mc.Camera((0, 20, 0), yaw=cfg["yaw"], pitch=cfg["pitch"], dist=cfg["dist"], fov=cfg["fov"])
     return render_layer(faces, cam, lights, cfg["height"] * ss, render_px=1900)
 
@@ -236,26 +239,13 @@ def build_cave(cfg, ss, W, H):
                             tag_of=lambda t: "lava" if t.startswith("lava") else "world",
                             emissive_of=lambda t: 0.9 if t.startswith("lava") else (0.5 if t == "ore" else 0.0))
 
-    # Raven, small, in the background on a rock ledge, pointing at Lonecard
-    rv = CONFIG["raven"]
-    rskin = mc.load_tex(os.path.join(HERE, "skins", "raven_9qmm.png"))
-    rf, _ = mc.player_faces(rskin, mc.Xform(mc.rot(0, rv["yaw"], 0), rv["pos"]), rv["pose"], tag="raven")
-    faces += rf
-    li, lk = int(rv["pos"][0] // 16), int(rv["pos"][2] // 16)
-    ledge = {}
-    for di in (-1, 0, 1):
-        for dk in (-1, 0, 1):
-            for j in range(rv["ledge"] - (1 if abs(di) + abs(dk) == 2 else 0)):
-                ledge[(li + di, j, lk + dk)] = assets.cave_deepslate((di + dk) % 3)
-    faces += mc.voxel_faces(ledge, mc.Xform(), tag_of=lambda t: "world")
-
     ore_c = np.asarray(cfg["stack_pos"], float) + np.array([-2, 16, 6])
     lights = mc.Lights(
         ambient=(0.11, 0.09, 0.17),
         key=((-0.4, 0.8, 0.6), (0.22, 0.22, 0.36)),
         rims=[((1.0, 0.2, -0.8), hexc(cfg["rim_right"]) * 0.3, 2.0),
               ((-1.0, 0.4, -0.8), hexc(cfg["rim_left"]) * 0.25, 2.0)],
-        points=[(ore_c + np.array([-18, 6, 22]), hexc("#3feaff") * 1.6, 30),
+        points=[(ore_c + np.array([-18, 18, 22]), hexc("#3feaff") * 1.7, 30),
                 ((200, 10, -180), hexc("#ff6a1a") * 2.6, 95),
                 ((136, 90, -250), hexc("#ff7a22") * 2.4, 110),
                 ((264, 90, -250), hexc("#ff7a22") * 1.6, 100),
@@ -459,28 +449,45 @@ def main():
     # Lonecard: coloured rim light (cyan from the ore side, violet on the back)
     img = img + rim(lmask, 1, -0.4, 4 * ss, hexc(cc["rim_right"]), 1.1) \
               + rim(lmask, -1, -0.5, 4 * ss, hexc(cc["rim_left"]), 1.0)
-    # bloom: ore gems + lava, plus a soft halo behind the ore stack (focal point)
+    # --- depth of field on the cave: soften everything far behind the hero
+    depth = cave["depth"]
+    far = np.clip((depth - 95) / 120, 0, 1)
+    img = img * (1 - far[..., None]) + blur(img, 2.2 * ss) * far[..., None]
+    # lava light in the chamber air (behind Raven, so it backlights him)
+    lx, ly = (c * ss for c in CONFIG["lava_glow"]["center"])
+    img = screen(img, hexc("#ff6a1a")[None, None] * (radial(W, H, lx, ly, CONFIG["lava_glow"]["radius"] * ss, 1.5) * 0.62)[..., None])
+    img = screen(img, hexc("#ffc06a")[None, None] * (radial(W, H, lx, ly, 0.45 * CONFIG["lava_glow"]["radius"] * ss, 2) * 0.35)[..., None])
+
+    # --- Raven: big, but set back - behind Lonecard + ore, hazed, backlit
+    rc = CONFIG["raven"]
+    raven = place((H, W), build_raven(rc, ss), rc["anchor"], ss)
+    ra = raven["rgba"][..., 3]
+    d0, d1 = rc["depth_cut"]
+    # only the hero, his pickaxe, the ore (and the floor near the bottom) pass in front of Raven
+    occl = cave["tags"].get("lonecard", 0) + cave["tags"].get("pickaxe", 0) + omask
+    rows = (np.arange(H)[:, None] > 0.78 * H).astype(np.float32)
+    occl = np.clip(occl + cave["tags"].get("world", 0) * rows * (depth < d1), 0, 1)
+    behind = 1 - occl
+    vis = ra * behind
+    rrgb = raven["rgba"][..., :3]
+    rrgb = rrgb + rim(ra, 1, -0.6, 5 * ss, hexc(rc["rim_right"]), 1.15) \
+                + rim(ra, -0.8, -0.6, 3 * ss, hexc(rc["rim_left"]), 1.1)
+    hz = rc["haze"]
+    rrgb = rrgb * (1 - hz) + hexc(rc["haze_color"])[None, None] * hz      # atmospheric perspective
+    if rc["soften"]:
+        rrgb = blur(np.clip(rrgb, 0, 1), rc["soften"] * ss)               # optional focus falloff
+    aura = blur(ra, 34 * ss) * behind
+    img = screen(img, hexc(rc["aura"])[None, None] * (aura * 0.55)[..., None])
+    img = over(img, rrgb, vis)
+    save("02_raven", np.dstack([rrgb, vis]))
+
+    # --- ore: halo + bloom (after Raven so the glow sits on top of him)
     img = screen(img, hexc("#2ff0ff")[None, None] * (blur(omask, 46 * ss) * 0.85 * (1 - 0.8 * omask))[..., None])
     bloom = blur(cave["emis"], 4 * ss) * 0.8 + blur(cave["emis"], 30 * ss) * 0.8
     img = screen(np.clip(img, 0, 1), np.clip(bloom, 0, 1))
-    # light haze in the air: cyan around the ore, orange over the lava chamber
     dg = CONFIG["diamond_glow"]
     gx, gy = (c * ss for c in dg["center"])
     img = screen(img, hexc(dg["color"])[None, None] * (radial(W, H, gx, gy, dg["radius"] * ss, 1.6) * 0.3 * (1 - 0.75 * omask))[..., None])
-    lx, ly = (c * ss for c in CONFIG["lava_glow"]["center"])
-    img = screen(img, hexc("#ff6a1a")[None, None] * (radial(W, H, lx, ly, CONFIG["lava_glow"]["radius"] * ss, 1.5) * 0.38)[..., None])
-
-    # --- Raven (background): thin lava-coloured rim so he separates, but stays secondary
-    rc = CONFIG["raven"]
-    ra = cave["tags"].get("raven", np.zeros((H, W), np.float32))
-    img = img + rim(ra, 1, -0.6, 3 * ss, hexc(rc["rim_right"]), 1.3) \
-              + rim(ra, -0.8, -0.6, 2 * ss, hexc(rc["rim_left"]), 0.7)
-    img = np.clip(img, 0, 1)
-
-    # --- depth of field: soften everything far behind the hero
-    depth = cave["depth"]
-    far = np.clip((depth - 95) / 120, 0, 1) * (1 - 0.5 * ra)
-    img = img * (1 - far[..., None]) + blur(img, 2.2 * ss) * far[..., None]
     save("01_scene", img)
 
     # --- particles
