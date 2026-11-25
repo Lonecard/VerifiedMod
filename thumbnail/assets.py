@@ -64,7 +64,9 @@ def pickaxe_sprite():
     # tips
     for (x, y) in ((13, 13), (1, 1)):
         put(x, y, "#0f6f86")
-    return s
+    # 5th channel: glow mask on the gem-coloured head only (not the wooden handle)
+    em = ((s[..., 2] > s[..., 0] + 0.2) & (s[..., 3] > 0)).astype(np.float32)
+    return np.dstack([s, em * 0.6])
 
 
 def stone_block(seed=3):

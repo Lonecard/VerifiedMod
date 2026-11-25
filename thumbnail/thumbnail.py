@@ -28,24 +28,24 @@ OUT = os.path.join(HERE, "out")
 CONFIG = dict(
     size=(1280, 720),
     ss=int(os.environ.get("SS", 2)),                                   # composite at 2x, downsample at the end
-    text=dict(string="EVERYTHING?", xy=(46, 26), width=640, rotate=-4,
+    text=dict(enabled=False,                 # the references carry no title text
+              string="EVERYTHING?", xy=(46, 26), width=640, rotate=-4,
               fill_top="#fff9d6", fill_mid="#ffd84a", fill_bot="#ff8a1a",
               outline="#12021c", outline_px=11, extrude=16),
-    raven=dict(                              # top right, the one making the request
-        anchor=(1045, 600), height=860,      # centre of the rendered figure, its pixel height
-        yaw=0, pitch=-6, fov=32, dist=125, root_yaw=-22,
-        pose=dict(head=(12, 4, 4), body=(0, 0, 0), arm_r=(-60, -30, 0),
-                  arm_l=(-6, 0, 16), leg_r=(0, 0, 2), leg_l=(0, 0, -2)),
-        rim_left="#5ff4ff", rim_right="#ffb23f", aura="#ff6a1a"),
-    cave=dict(                               # 3-D cave + Lonecard + diamond ore stack
-        cam_pos=(20, 26, 80), cam_target=(40, 34, -40), fov=50,
-        stack_pos=(27, 0, 0), stack_yaw=-8, ore_glow=0.95,
-        root_yaw=50,
-        pose=dict(head=(6, -4, 0), body=(0, 6, 0), arm_r=(-72, 10, 0),
-                  arm_l=(-35, 0, -8), leg_r=(18, 0, 0), leg_l=(-18, 0, 0)),
+    raven=dict(                              # background: on a ledge in the lava chamber
+        pos=(120, 48, -152), yaw=-36, ledge=3,
+        pose=dict(head=(6, 0, 0), body=(0, 0, 0), arm_r=(-84, 18, 0),
+                  arm_l=(-4, 0, 10), leg_r=(0, 0, 2), leg_l=(0, 0, -2)),
+        rim_left="#ff4fa0", rim_right="#ffb23f"),
+    cave=dict(                               # hero shot: Lonecard + diamond ore stack in a cave
+        cam_pos=(-2, 25, 54), cam_target=(30, 23, -80), fov=40,
+        stack_pos=(36, 0, -26), stack_yaw=-20, ore_glow=0.95,
+        root_yaw=24, pick_roll=90,
+        pose=dict(head=(-4, -4, 0), body=(0, 4, 0), arm_r=(-140, 0, -20),
+                  arm_l=(-24, 0, -10), leg_r=(14, 0, 0), leg_l=(-12, 0, 0)),
         rim_left="#c04dff", rim_right="#5ff4ff"),
-    diamond_glow=dict(center=(585, 500), radius=300, color="#22e8ff"),
-    lava_glow=dict(center=(1050, 520), radius=420),
+    diamond_glow=dict(center=(880, 470), radius=320, color="#22e8ff"),
+    lava_glow=dict(center=(1080, 200), radius=380),
 )
 
 
@@ -176,8 +176,9 @@ def build_cave(cfg, ss, W, H):
                          np.array([-1, 0, 0])])
     grip = np.array([3.5, 3.5, 0.0])
     hand = np.array([0, -8.5, 0.0])
-    item = joints["arm_r"] @ mc.Xform(R, hand - R @ (s * grip), s)
-    faces += mc.sprite_voxels(pick, item, "pickaxe", depth=1.0)
+    roll = mc.Xform(mc.rot(0, cfg.get("pick_roll", 0), 0))      # spin the tool around the arm axis
+    item = joints["arm_r"] @ roll @ mc.Xform(R, hand - R @ (s * grip), s)
+    faces += mc.sprite_voxels(pick, item, "pickaxe", depth=1.0, emissive=0.5)
 
     # diamond ore stack (2 + 1) set into a small stone outcrop
     w = mc.Xform(mc.rot(0, cfg["stack_yaw"], 0), cfg["stack_pos"])
@@ -226,7 +227,6 @@ def build_cave(cfg, ss, W, H):
     for j in range(-1, 11):
         cells[(8, j, -17)] = "lava0" if j % 2 else "lava1"
         cells[(16, j, -17)] = "lava1" if j % 2 else "lava0"
-    cells[(18, 6, -17)] = "ore"
     for (i, k, h) in [(19, -10, 4), (13, -4, 1), (21, -3, 3), (11, -15, 2)]:
         for j in range(h):
             cells[(i, j, k)] = stone()
@@ -236,13 +236,26 @@ def build_cave(cfg, ss, W, H):
                             tag_of=lambda t: "lava" if t.startswith("lava") else "world",
                             emissive_of=lambda t: 0.9 if t.startswith("lava") else (0.5 if t == "ore" else 0.0))
 
+    # Raven, small, in the background on a rock ledge, pointing at Lonecard
+    rv = CONFIG["raven"]
+    rskin = mc.load_tex(os.path.join(HERE, "skins", "raven_9qmm.png"))
+    rf, _ = mc.player_faces(rskin, mc.Xform(mc.rot(0, rv["yaw"], 0), rv["pos"]), rv["pose"], tag="raven")
+    faces += rf
+    li, lk = int(rv["pos"][0] // 16), int(rv["pos"][2] // 16)
+    ledge = {}
+    for di in (-1, 0, 1):
+        for dk in (-1, 0, 1):
+            for j in range(rv["ledge"] - (1 if abs(di) + abs(dk) == 2 else 0)):
+                ledge[(li + di, j, lk + dk)] = assets.cave_deepslate((di + dk) % 3)
+    faces += mc.voxel_faces(ledge, mc.Xform(), tag_of=lambda t: "world")
+
     ore_c = np.asarray(cfg["stack_pos"], float) + np.array([-2, 16, 6])
     lights = mc.Lights(
         ambient=(0.11, 0.09, 0.17),
         key=((-0.4, 0.8, 0.6), (0.22, 0.22, 0.36)),
         rims=[((1.0, 0.2, -0.8), hexc(cfg["rim_right"]) * 0.3, 2.0),
               ((-1.0, 0.4, -0.8), hexc(cfg["rim_left"]) * 0.25, 2.0)],
-        points=[(ore_c + np.array([-10, 4, 26]), hexc("#3feaff") * 1.3, 24),
+        points=[(ore_c + np.array([-18, 6, 22]), hexc("#3feaff") * 1.6, 30),
                 ((200, 10, -180), hexc("#ff6a1a") * 2.6, 95),
                 ((136, 90, -250), hexc("#ff7a22") * 2.4, 110),
                 ((264, 90, -250), hexc("#ff7a22") * 1.6, 100),
@@ -436,7 +449,6 @@ def main():
         saved.append((name, p))
 
     print("rendering 3-D models...")
-    raven = place((H, W), build_raven(CONFIG["raven"], ss), CONFIG["raven"]["anchor"], ss)
     cave = build_cave(CONFIG["cave"], ss, W, H)
 
     print("compositing...")
@@ -445,8 +457,8 @@ def main():
     lmask = cave["tags"].get("lonecard", 0) + cave["tags"].get("pickaxe", 0)
     omask = cave["tags"].get("ore", np.zeros((H, W), np.float32))
     # Lonecard: coloured rim light (cyan from the ore side, violet on the back)
-    img = img + rim(lmask, 1, -0.4, 3 * ss, hexc(cc["rim_right"]), 1.0) \
-              + rim(lmask, -1, -0.5, 3 * ss, hexc(cc["rim_left"]), 0.8)
+    img = img + rim(lmask, 1, -0.4, 4 * ss, hexc(cc["rim_right"]), 1.1) \
+              + rim(lmask, -1, -0.5, 4 * ss, hexc(cc["rim_left"]), 1.0)
     # bloom: ore gems + lava, plus a soft halo behind the ore stack (focal point)
     img = screen(img, hexc("#2ff0ff")[None, None] * (blur(omask, 46 * ss) * 0.85 * (1 - 0.8 * omask))[..., None])
     bloom = blur(cave["emis"], 4 * ss) * 0.8 + blur(cave["emis"], 30 * ss) * 0.8
@@ -457,24 +469,24 @@ def main():
     img = screen(img, hexc(dg["color"])[None, None] * (radial(W, H, gx, gy, dg["radius"] * ss, 1.6) * 0.3 * (1 - 0.75 * omask))[..., None])
     lx, ly = (c * ss for c in CONFIG["lava_glow"]["center"])
     img = screen(img, hexc("#ff6a1a")[None, None] * (radial(W, H, lx, ly, CONFIG["lava_glow"]["radius"] * ss, 1.5) * 0.38)[..., None])
-    save("01_cave_lonecard_ore", np.clip(img, 0, 1))
 
-    # --- Raven: warm aura from the lava behind, figure, coloured rim lights
+    # --- Raven (background): thin lava-coloured rim so he separates, but stays secondary
     rc = CONFIG["raven"]
-    ra = raven["rgba"][..., 3]
-    aura = blur(ra, 26 * ss)
-    img = screen(img, hexc(rc["aura"])[None, None] * (aura * 0.5)[..., None])
-    rrgb = raven["rgba"][..., :3]
-    rrgb = rrgb + rim(ra, 1, -0.6, 5 * ss, hexc(rc["rim_right"]), 1.25) \
-                + rim(ra, -0.8, -0.6, 4 * ss, hexc(rc["rim_left"]), 1.0)
-    raven_rgba = np.dstack([np.clip(rrgb, 0, 1), ra])
-    save("03_raven", raven_rgba)
-    img = over(img, raven_rgba[..., :3], ra)
+    ra = cave["tags"].get("raven", np.zeros((H, W), np.float32))
+    img = img + rim(ra, 1, -0.6, 3 * ss, hexc(rc["rim_right"]), 1.3) \
+              + rim(ra, -0.8, -0.6, 2 * ss, hexc(rc["rim_left"]), 0.7)
+    img = np.clip(img, 0, 1)
+
+    # --- depth of field: soften everything far behind the hero
+    depth = cave["depth"]
+    far = np.clip((depth - 95) / 120, 0, 1) * (1 - 0.5 * ra)
+    img = img * (1 - far[..., None]) + blur(img, 2.2 * ss) * far[..., None]
+    save("01_scene", img)
 
     # --- particles
     sp = sparkles(W, H, ss, [
-        (452, 470, 34, 26, "#bffcff", 2.5, 6),       # mining sparks where the pick hits
-        (470, 560, 120, 14, "#5ff4ff", 1.5, 4),
+        (880, 430, 150, 30, "#bffcff", 2.0, 5.5),    # diamond sparkle around the ore
+        (700, 560, 90, 14, "#5ff4ff", 1.5, 4),
         (930, 420, 240, 26, "#ffb35a", 1.2, 3.5),    # embers rising off the lava
     ], rng)
     save("04_particles", np.dstack([sp, sp.max(-1)]))
@@ -486,9 +498,10 @@ def main():
     img = img * np.clip(vig, 0.35, 1)[..., None]
 
     # --- title
-    txt = text_layer(W, H, ss, CONFIG["text"])
-    save("05_text", txt)
-    img = over(img, txt[..., :3], txt[..., 3])
+    if CONFIG["text"].get("enabled"):
+        txt = text_layer(W, H, ss, CONFIG["text"])
+        save("05_text", txt)
+        img = over(img, txt[..., :3], txt[..., 3])
 
     # --- grade: slight contrast + saturation pop
     lum = img.mean(-1, keepdims=True)
